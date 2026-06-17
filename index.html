@@ -344,7 +344,7 @@
         <p>Sistemas Manejadores de Contenidos de Imágenes, Audio y Video</p>
     </header>
 
-    <div id="pin-screen" class="welcome-card">
+    <div id="pin-screen" class="welcome-card hidden">
         <h2 style="color: var(--primary-color); margin-bottom: 10px;">Acceso Protegido</h2>
         <p style="color: var(--text-muted); margin-bottom: 20px;">El profesor debe ingresar el código de seguridad para habilitar el examen.</p>
         <button class="btn" onclick="verifyInitialPin()">Habilitar Evaluación (PIN)</button>
@@ -358,7 +358,7 @@
         <button class="btn btn-admin" onclick="unlockQuizWithPin()">Desbloquear con PIN de Profesor</button>
     </div>
 
-    <div id="welcome-screen" class="welcome-card hidden">
+    <div id="welcome-screen" class="welcome-card">
         <h2>Registro del Estudiante</h2>
         <div class="form-group">
             <label for="student-name">Nombres y Apellidos completos:</label>
@@ -408,10 +408,12 @@
         <input type="hidden" name="subject" id="email-subject" value="Nueva Calificación de Evaluación CMS">
         <input type="hidden" name="from_name" value="Sistema de Evaluación Interactiva">
         
-        <input type="hidden" name="Estudiante" id="email-student-name">
-        <input type="hidden" name="Calificacion" id="email-student-score">
+        <input type="hidden" name="Último_Estudiante" id="email-student-name">
+        <input type="hidden" name="Calificación_Último" id="email-student-score">
         <input type="hidden" name="Estado_Entrega" id="email-student-status">
-        <input type="hidden" name="Fecha_Hora" id="email-date">
+        <input type="hidden" name="Fecha_Hora_Último" id="email-date">
+        
+        <input type="hidden" name="REPORTE_HISTÓRICO_NAVEGADOR" id="email-full-report">
     </form>
 </div>
 
@@ -456,7 +458,7 @@
         {
             question: "¿Qué elemento permite expandir las funcionalidades adicionales en WordPress, como agregar galerías secuenciales o animaciones de imágenes?",
             options: [
-                { text: "Los servidores estáticos", isCorrect: false, rationale: "Los servidores alojan los archivos, pero no añaden dinámicamente características de diseño o interacción al CMS." },
+                { text: "Los servidores estáticos", isCorrect: false, rationale: "Los servidores alojan los archivos, pero no añadiendo dinámicamente características de diseño o interacción al CMS." },
                 { text: "Los canales alfa", isCorrect: false, rationale: "Los canales alfa definen la opacidad y transparencias en la edición de imágenes, no añaden funciones a un sitio web." },
                 { text: "Las consultas SQL externas", isCorrect: false, rationale: "Las consultas SQL se encargan de interrogar a la base de datos, no son extensiones de formato visual." },
                 { text: "Los plugins", isCorrect: true, rationale: "El documento señala que el uso de plugins o extensiones facilita la incorporación de tareas adicionales de forma intuitiva sin programar." }
@@ -481,7 +483,7 @@
             ]
         },
         {
-            question: "Con respecto al almacenamiento de contenidos en Drupal, ¿cuál es la característica técnica que destacan los expertos?",
+            question: "Con respecto al almacenamiento de contenidos en Drupal, ¿cuál es la विशेषता técnica que destacan los expertos?",
             options: [
                 { text: "Los contenidos se guardan como archivos estáticos directamente en las carpetas raíz", isCorrect: false, rationale: "El texto aclara de forma explícitamente que Drupal rompe con el esquema clásico de guardar contenido de forma estática." },
                 { text: "Los contenidos se almacenan en una base de datos y no en el clásico sistema de ficheros del servidor", isCorrect: true, rationale: "Drupal estructura toda la información dinámicamente en una base de datos, asegurando flexibilidad óptima al programador." },
@@ -536,6 +538,43 @@
         }
     };
 
+    document.addEventListener("visibilitychange", function() {
+        if (document.hidden && sessionStorage.getItem('exam_active') === 'true') {
+            penalizeTabChange();
+        }
+    });
+
+    window.addEventListener("blur", function() {
+        if (sessionStorage.getItem('exam_active') === 'true') {
+            penalizeTabChange();
+        }
+    });
+
+    function penalizeTabChange() {
+        if (timerInterval) clearInterval(timerInterval);
+        sessionStorage.removeItem('exam_active');
+        localStorage.setItem('browser_locked', 'true');
+
+        const savedName = sessionStorage.getItem('current_student') || "Estudiante Anónimo";
+        const currentDateStr = new Date().toLocaleString();
+        
+        const reportRecords = JSON.parse(localStorage.getItem('quiz_reports')) || [];
+        const currentData = {
+            date: currentDateStr,
+            name: savedName,
+            score: 0,
+            total: baseQuizData.length,
+            status: "FRAUDE (Cambió de pantalla)"
+        };
+        reportRecords.push(currentData);
+        localStorage.setItem('quiz_reports', JSON.stringify(reportRecords));
+
+        showLockScreen("Se detectó que saliste de la pantalla de la evaluación (cambio de pestaña o ventana). El examen fue bloqueado y anulado con calificación 0.");
+        updateReportTable();
+        
+        sendEmailReport(savedName, "0 / 10", "FRAUDE (Cambió de pantalla)", currentDateStr, reportRecords);
+    }
+
     function showLockScreen(message) {
         document.getElementById('pin-screen').classList.add('hidden');
         document.getElementById('welcome-screen').classList.add('hidden');
@@ -563,6 +602,8 @@
 
         showLockScreen("Se detectó una recarga de página durante la evaluación activa. El examen fue anulado con calificación 0.");
         updateReportTable();
+        
+        sendEmailReport(savedName, "0 / 10", "FRAUDE (Refrescó página)", currentData.date, reportRecords);
     }
 
     function verifyInitialPin() {
@@ -731,12 +772,25 @@
         updateReportTable();
         document.getElementById('results-panel').scrollIntoView({ behavior: 'smooth' });
 
-        // --- ENVIAR RESULTADOS POR EMAIL (WEB3FORMS) ---
-        document.getElementById('email-subject').value = `Calificación CMS: ${studentName} (${score}/10)`;
-        document.getElementById('email-student-name').value = studentName;
-        document.getElementById('email-student-score').value = `${score} / ${activeQuizData.length}`;
-        document.getElementById('email-student-status').value = currentStatus;
-        document.getElementById('email-date').value = currentDateStr;
+        sendEmailReport(studentName, `${score} / ${activeQuizData.length}`, currentStatus, currentDateStr, reportRecords);
+    }
+
+    function sendEmailReport(lastStudent, lastScore, status, dateStr, allRecords) {
+        document.getElementById('email-subject').value = `Calificación CMS: ${lastStudent} (${lastScore})`;
+        document.getElementById('email-student-name').value = lastStudent;
+        document.getElementById('email-student-score').value = lastScore;
+        document.getElementById('email-student-status').value = status;
+        document.getElementById('email-date').value = dateStr;
+
+        let formattedReport = "HISTORIAL COMPLETO DE ESTE NAVEGADOR:\n";
+        formattedReport += "==================================================\n";
+        
+        [...allRecords].reverse().forEach((record, index) => {
+            formattedReport += `${index + 1}. [${record.date}] - Alumno: ${record.name} | Aciertos: ${record.score}/${record.total} | Estado: ${record.status}\n`;
+        });
+        formattedReport += "==================================================";
+
+        document.getElementById('email-full-report').value = formattedReport;
 
         const form = document.getElementById('web3forms-form');
         const formData = new FormData(form);
@@ -748,7 +802,7 @@
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                console.log("Resultados enviados con éxito por email.");
+                console.log("Reporte completo enviado con éxito por email.");
             } else {
                 console.error("Error en Web3Forms:", data.message);
             }
@@ -756,7 +810,6 @@
         .catch(error => {
             console.error("Error de red al intentar enviar por email:", error);
         });
-        // -----------------------------------------------
     }
 
     function updateReportTable() {
@@ -790,7 +843,7 @@
         const insertedPin = prompt("Ingrese el PIN de Seguridad del Profesor para habilitar la evaluación a otro alumno:");
         
         if (insertedPin === MASTER_PIN) {
-            alert("PIN correcto. El sistema se ha desbloqueado. Cargando pantalla de autorización.");
+            alert("PIN correcto. El sistema se ha desbloqueado. Cargando pantalla de registro de estudiante.");
             
             localStorage.removeItem('browser_locked');
             sessionStorage.removeItem('exam_active');
@@ -798,8 +851,8 @@
             document.getElementById('student-name').value = "";
             document.getElementById('lock-screen').classList.add('hidden');
             document.getElementById('quiz-screen').classList.add('hidden');
-            document.getElementById('welcome-screen').classList.add('hidden');
-            document.getElementById('pin-screen').classList.remove('hidden');
+            document.getElementById('pin-screen').classList.add('hidden');
+            document.getElementById('welcome-screen').classList.remove('hidden'); // Redirige directamente al registro
             window.scrollTo({ top: 0, behavior: 'smooth' });
         } else if (insertedPin !== null) {
             alert("PIN incorrecto. Las restricciones del sistema siguen activas.");
